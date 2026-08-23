@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 """
 api/main.py
 
@@ -19,50 +21,113 @@ app = FastAPI(title="ControlPlane.ai", version="0.1.0")
 
 @app.get("/policy/current")
 def get_current_policy():
-    """
-    Returns the currently active policy for the insurance-claims domain.
-
-    TODO: implement via policy.lifecycle.get_active_policy().
-    """
-    raise NotImplementedError
+    from policy.lifecycle import get_active_policy
+    try:
+        return get_active_policy()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/policy/discover")
 def discover_policy():
-    """
-    Runs engine/discover.py's rule-mining process against the current historical
-    dataset, attaches a rationale via engine/rationale.py, and returns a DRAFT/
-    PROPOSED policy object -- does NOT activate it.
+    import os, subprocess
+    from policy.schema import Policy
+    from engine.rationale import generate_rationale, generate_diff_description
+    from policy.lifecycle import get_active_policy, propose
 
-    TODO: implement. This endpoint must not skip the held-out validation step --
-    see docs/conventions.md "Discovery-engine integrity rules".
-    """
-    raise NotImplementedError
+    engine_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "engine")
+    res = subprocess.run(["python", "discover.py"], cwd=engine_dir, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise HTTPException(status_code=500, detail="Discovery failed: " + res.stderr)
+        
+    versions_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "policy", "versions")
+    new_policy_path = os.path.join(versions_dir, "POLICY-042-v2.json")
+    
+    try:
+        candidate_policy = Policy.from_json_file(new_policy_path)
+        from policy.schema import PolicyStatus
+        candidate_policy.status = PolicyStatus.DRAFT
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to load generated policy: " + str(e))
+        
+    old_policy = get_active_policy("POLICY-042")
+    old_summary = "All claims < $50k auto-processed"
+    cond_summary = " AND ".join(f"{c.field} {c.operator.value} {c.value}" for c in candidate_policy.conditions)
+    
+    rationale_text = generate_rationale(candidate_policy.evidence, cond_summary, old_summary)
+    diff_text = generate_diff_description(old_summary, cond_summary)
+    
+    candidate_policy.rationale = rationale_text + "\n\nDiff: " + diff_text
+    candidate_policy = propose(candidate_policy)
+    
+    os.remove(new_policy_path)
+    candidate_policy.to_json_file(new_policy_path)
+    
+    return candidate_policy
 
 
 @app.post("/policy/{policy_id}/approve")
 def approve_policy(policy_id: str):
-    """
-    Human approval gate. TODO: implement via policy.lifecycle.approve(), which
-    itself must run runtime/regression_test.py before activation completes.
-    """
-    raise NotImplementedError
+    import os
+    from policy.schema import Policy, PolicyStatus
+    from policy.lifecycle import approve
+    from runtime.regression_test import run_regression
+    
+    versions_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "policy", "versions")
+    policy_path = os.path.join(versions_dir, f"{policy_id}.json")
+    if not os.path.exists(policy_path):
+        raise HTTPException(status_code=404, detail="Policy not found")
+        
+    try:
+        policy = Policy.from_json_file(policy_path)
+        if policy.status != PolicyStatus.PROPOSED:
+            raise HTTPException(status_code=400, detail="Only proposed policies can be approved")
+            
+        report = run_regression(policy)
+        policy = approve(policy)
+        
+        os.remove(policy_path)
+        policy.to_json_file(policy_path)
+        return {"policy": policy, "regression_report": report}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/policy/{policy_id}/reject")
 def reject_policy(policy_id: str, reason: str = ""):
-    """TODO: implement via policy.lifecycle.reject()."""
-    raise NotImplementedError
+    import os
+    from policy.schema import Policy
+    from policy.lifecycle import reject
+    
+    versions_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "policy", "versions")
+    policy_path = os.path.join(versions_dir, f"{policy_id}.json")
+    if not os.path.exists(policy_path):
+        raise HTTPException(status_code=404, detail="Policy not found")
+        
+    try:
+        policy = Policy.from_json_file(policy_path)
+        policy = reject(policy, reason)
+        os.remove(policy_path)
+        policy.to_json_file(policy_path)
+        return policy
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/runtime/evaluate")
 def evaluate_claim(claim: dict):
-    """
-    Evaluates a new claim against the CURRENTLY ACTIVE policy only. No model call.
-
-    TODO: implement via runtime.evaluator.evaluate(). Validate `claim` has the
-    fields the active policy's conditions reference before evaluating -- raise a
-    clear HTTPException(422) if a required field is missing, don't silently
-    treat a missing field as False.
-    """
-    raise NotImplementedError
+    from policy.lifecycle import get_active_policy
+    from runtime.evaluator import evaluate
+    
+    try:
+        active_policy = get_active_policy()
+        for cond in active_policy.conditions:
+            if cond.field not in claim:
+                raise HTTPException(status_code=422, detail=f"Missing required field: {cond.field}")
+        
+        decision = evaluate(claim, active_policy)
+        return decision
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

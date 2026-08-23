@@ -17,29 +17,35 @@ from policy.schema import Evidence
 
 
 def generate_rationale(evidence: Evidence, conditions_summary: str, old_policy_summary: str) -> str:
-    """
-    Given a discovered rule's evidence and a plain description of the old vs. new
-    conditions, produce a short human-readable explanation a non-technical reviewer
-    could understand.
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        print("[rationale] WARNING: No GROQ_API_KEY set — using MOCK rationale, not live LLM.")
+        return "MOCK RATIONALE (No GROQ_API_KEY): The data shows this new rule significantly improves success rates compared to the baseline, so it is proposed for auto-processing."
+        
+    import groq
+    client = groq.Groq(api_key=api_key)
+    prompt = f"""
+You are an AI assistant explaining a newly discovered insurance claim policy rule.
 
-    TODO: implement, e.g. via the Anthropic API. Read the API key from the
-    ANTHROPIC_API_KEY environment variable -- never hardcode it (see
-    docs/prerequisites.md "LLM access").
+Old Policy: {old_policy_summary}
+New Rule Conditions: {conditions_summary}
 
-    IMPORTANT: this function's return value is a string, full stop. It must not
-    return or influence anything that ends up in a Policy's `conditions` or
-    `action` fields -- those are already fixed by the time this function is called.
-    The evidence and conditions passed in here are read-only context, not inputs
-    the LLM is being asked to decide.
-    """
-    raise NotImplementedError
+Evidence from historical backtesting:
+- Train Support: {evidence.train_support}
+- Held-out Support (Test set): {evidence.held_out_support}
+- Held-out Success Rate: {evidence.held_out_success_rate:.2%}
+- Baseline Success Rate in this zone: {evidence.held_out_baseline_success_rate:.2%}
+
+Write a short (2-3 sentences) human-readable explanation a non-technical reviewer could understand, explaining why this new rule is being proposed based on the evidence.
+"""
+    
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-20b",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    print(f"[rationale] Live LLM response received from Groq (model: openai/gpt-oss-20b).")
+    return response.choices[0].message.content
 
 
 def generate_diff_description(old_policy_summary: str, new_conditions_summary: str) -> str:
-    """
-    Plain-English "previously X, this proposes Y" description for the approval UI.
-
-    TODO: implement. Can reuse the same LLM call as generate_rationale() or be a
-    separate call -- your choice, this is Still Open per docs/philosophy.md.
-    """
-    raise NotImplementedError
+    return f"Previously, {old_policy_summary}. The data shows a pattern, so this proposes auto-processing claims that match: {new_conditions_summary}."

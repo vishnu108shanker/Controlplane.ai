@@ -41,10 +41,24 @@ def evaluate(claim: dict, policy: Policy | None = None) -> RoutingDecision:
     """
     if policy is None:
         policy = get_active_policy()
-    raise NotImplementedError
+        
+    claim_id = claim.get('claim_id')
+    
+    if policy.matches(claim):
+        final_action = policy.action
+    else:
+        # Fallback if conditions do not match
+        final_action = Action.HUMAN_REVIEW
+        
+    if policy.requires_human:
+        final_action = Action.HUMAN_REVIEW
+        
+    return RoutingDecision(action=final_action, matched_policy_id=policy.policy_id, claim_id=claim_id)
 
 
 def evaluate_batch(claims: list[dict], policy: Policy | None = None) -> list[RoutingDecision]:
     """Convenience wrapper for evaluating many claims against the same policy --
-    used by regression_test.py. TODO: implement in terms of evaluate() above."""
-    raise NotImplementedError
+    used by regression_test.py."""
+    if policy is None:
+        policy = get_active_policy()
+    return [evaluate(c, policy) for c in claims]

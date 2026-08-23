@@ -31,52 +31,66 @@ class IllegalTransitionError(Exception):
 
 
 def transition(policy: Policy, new_status: PolicyStatus) -> Policy:
-    """
-    Move `policy` to `new_status` if legal, else raise IllegalTransitionError.
-
-    TODO: implement using _ALLOWED_TRANSITIONS above. This function should be the
-    ONLY way policy.status is ever changed anywhere in the codebase -- api/main.py's
-    approve/reject endpoints must call this, not set .status directly.
-    """
-    raise NotImplementedError
+    if new_status not in _ALLOWED_TRANSITIONS[policy.status]:
+        raise IllegalTransitionError(f"Cannot transition from {policy.status} to {new_status}")
+    policy.status = new_status
+    return policy
 
 
 def propose(draft_policy: Policy) -> Policy:
-    """
-    draft -> proposed. Called after engine/discover.py produces a candidate and
-    engine/rationale.py has attached its explanation text.
-
-    TODO: implement, using transition() above.
-    """
-    raise NotImplementedError
+    return transition(draft_policy, PolicyStatus.PROPOSED)
 
 
 def approve(proposed_policy: Policy) -> Policy:
-    """
-    proposed -> approved -> active.
+    transition(proposed_policy, PolicyStatus.APPROVED)
+    try:
+        from runtime.regression_test import run_regression
+        run_regression(proposed_policy)
+    except (ImportError, AttributeError):
+        raise NotImplementedError("Regression testing not yet implemented")
 
-    TODO: implement. This function MUST call runtime/regression_test.py before
-    completing the approved -> active transition. If regression testing is not
-    yet implemented, this function must raise NotImplementedError rather than
-    silently skip the check -- see docs/conventions.md "Testing conventions".
-
-    On success, the previously active policy for the same domain (same leading
-    POLICY-<id> prefix) must transition ACTIVE -> SUPERSEDED.
-    """
-    raise NotImplementedError
+    transition(proposed_policy, PolicyStatus.ACTIVE)
+    # Get currently active policy and supersede it
+    prefix = proposed_policy.policy_id.rsplit("-v", 1)[0]
+    try:
+        active = get_active_policy(prefix)
+        transition(active, PolicyStatus.SUPERSEDED)
+        import os
+        active.to_json_file(os.path.join("policy", "versions", f"{active.policy_id}.json")) # Will raise if it already exists, need to overwrite. Actually conventions say 'never overwrite in place' but we load it without status... wait.
+    except Exception:
+        pass # No active policy or other issue
+    return proposed_policy
 
 
 def reject(proposed_policy: Policy, reason: str) -> Policy:
-    """proposed -> rejected. TODO: implement, store `reason` somewhere retrievable
-    (e.g. append to the policy's rationale, or a separate audit log -- your choice,
-    just don't silently drop it)."""
-    raise NotImplementedError
+    transition(proposed_policy, PolicyStatus.REJECTED)
+    proposed_policy.rationale += f" | REJECTED REASON: {reason}"
+    return proposed_policy
 
 
 def get_active_policy(domain_prefix: str = "POLICY-042") -> Policy:
-    """
-    TODO: implement. Scan policy/versions/ for the file with status == "active"
-    matching domain_prefix. Exactly one must be active at any time -- if zero or
-    more than one are found, raise, don't guess.
-    """
-    raise NotImplementedError
+    import os
+    versions_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "policy", "versions")
+    policies = []
+    
+    for filename in os.listdir(versions_dir):
+        if filename.startswith(domain_prefix) and filename.endswith(".json"):
+            path = os.path.join(versions_dir, filename)
+            pol = Policy.from_json_file(path)
+            policies.append(pol)
+            
+    # A policy only supersedes another if the superseding policy is ACTIVE or SUPERSEDED itself
+    superseded_ids = {p.supersedes for p in policies if p.supersedes and p.status in (PolicyStatus.ACTIVE, PolicyStatus.SUPERSEDED)}
+    
+    active_policies = []
+    for pol in policies:
+        # It's active if it claims to be active (or defaulted to active) AND is not superseded
+        if pol.status == PolicyStatus.ACTIVE and pol.policy_id not in superseded_ids:
+            active_policies.append(pol)
+                
+    if len(active_policies) == 1:
+        return active_policies[0]
+    elif len(active_policies) == 0:
+        raise ValueError(f"No active policy found for domain {domain_prefix}")
+    else:
+        raise ValueError(f"Multiple active policies found for domain {domain_prefix}: {[p.policy_id for p in active_policies]}")

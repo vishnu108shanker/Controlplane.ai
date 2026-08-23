@@ -128,7 +128,7 @@ class Policy:
         for cond in data['conditions']:
             cond['operator'] = cond['operator'].value
         data['action'] = data['action'].value
-        data.pop('status', None)
+        data['status'] = data['status'].value
         
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
