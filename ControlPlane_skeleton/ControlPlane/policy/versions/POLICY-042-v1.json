@@ -1,0 +1,20 @@
+{
+  "policy_id": "POLICY-042-v1",
+  "supersedes": null,
+  "conditions": [
+    {
+      "field": "claim_amount",
+      "operator": "<",
+      "value": 50000
+    },
+    {
+      "field": "fraud_score",
+      "operator": "<=",
+      "value": 0.75
+    }
+  ],
+  "action": "AUTO_PROCESS",
+  "requires_human": false,
+  "evidence": null,
+  "rationale": "Hand-authored baseline policy"
+}
