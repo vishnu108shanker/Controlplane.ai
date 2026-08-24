@@ -17,7 +17,7 @@ is the correctness check -- if it doesn't match, the bug is in this file, not th
 from __future__ import annotations
 from dataclasses import dataclass
 from policy.schema import Policy, Action
-from policy.lifecycle import get_active_policy
+from policy.store import get_active_policy
 
 
 @dataclass

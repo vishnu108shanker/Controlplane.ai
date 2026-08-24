@@ -1,94 +1,80 @@
 from __future__ import annotations
-import argparse
 import os
-import subprocess
 import json
-from dotenv import load_dotenv
+import logging
+from policy.schema import Policy, PolicyStatus
+from policy.store import get_active_policy
 
-def main() -> None:
-    load_dotenv()
-    parser = argparse.ArgumentParser(description="ControlPlane.ai demo walkthrough")
-    parser.add_argument("--auto-approve", action="store_true",
-                         help="Skip the interactive approval prompt (for scripted runs)")
-    args = parser.parse_args()
+logger = logging.getLogger(__name__)
 
-    # Step 1: from policy.lifecycle import get_active_policy; print it.
-    from policy.lifecycle import get_active_policy
+def step_1_current_policy() -> Policy:
     active_policy = get_active_policy()
     print("=" * 60)
     print("Step 1: Current (active) policy")
     print(f"Policy ID: {active_policy.policy_id}")
     print(f"Action: {active_policy.action.value}")
     print("Conditions:")
-    for c in active_policy.conditions:
-        print(f"  - {c.field} {c.operator.value} {c.value}")
-    
-    # Step 2: load data/insurance_claims.csv.
+    for i, group in enumerate(active_policy.condition_groups):
+        if i > 0:
+            print("  OR")
+        for c in group:
+            print(f"  - {c.field} {c.operator.value} {c.value}")
+    return active_policy
+
+def step_2_load_data():
     import pandas as pd
     print("\n" + "=" * 60)
     print("Step 2: Loading historical claims data")
     df = pd.read_csv("data/insurance_claims.csv")
     print(f"Loaded {len(df)} historical claims.")
-    
-    if not args.auto_approve:
-        input("\nPress Enter to run Discovery Engine...")
-    
-    # Step 3-4: call engine/discover.py's discovery function; print evidence.
+    return df
+
+def step_3_4_run_discovery() -> Policy:
     print("\n" + "=" * 60)
     print("Step 3 & 4: Running Discovery Engine and Validating Evidence")
-    # Change working directory so discover.py finds ../data
-    engine_dir = os.path.join(os.path.dirname(__file__), "engine")
-    subprocess.run(["python", "discover.py"], cwd=engine_dir)
+    from engine.discover import run_discovery
     
-    # Reload the proposed policy
-    from policy.schema import Policy
-    new_policy_path = os.path.join("policy", "versions", "POLICY-042-v2.json")
+    new_policy_path = run_discovery()
     proposed_policy = Policy.from_json_file(new_policy_path)
-    
-    # Set to DRAFT manually for workflow
-    from policy.schema import PolicyStatus
     proposed_policy.status = PolicyStatus.DRAFT
     
-    # Save draft to disk so get_active_policy ignores it during regression test
     try:
         os.remove(new_policy_path)
     except FileNotFoundError:
         pass
     proposed_policy.to_json_file(new_policy_path)
-    
-    if not args.auto_approve:
-        input("\nPress Enter to generate Rationale...")
-        
-    # Step 5: call engine/rationale.py; print the rationale + diff.
+    return proposed_policy
+
+def step_5_generate_rationale(proposed_policy: Policy) -> Policy:
     print("\n" + "=" * 60)
     print("Step 5: Generating AI Rationale")
     from engine.rationale import generate_rationale, generate_diff_description
     
     old_summary = "All claims < $50k auto-processed"
-    cond_summary = " AND ".join(f"{c.field} {c.operator.value} {c.value}" for c in proposed_policy.conditions)
+    cond_summaries = []
+    for group in proposed_policy.condition_groups:
+        cond_summaries.append("(" + " AND ".join(f"{c.field} {c.operator.value} {c.value}" for c in group) + ")")
+    cond_summary = " OR ".join(cond_summaries)
+    
     rationale = generate_rationale(proposed_policy.evidence, cond_summary, old_summary)
     diff = generate_diff_description(old_summary, cond_summary)
     
     print("\nDIFF DESCRIPTION:")
-    print(diff.encode('utf-8', 'ignore').decode('utf-8', 'ignore'))
+    print(diff)
     print("\nAI RATIONALE:")
-    print(rationale.encode('utf-8', 'ignore').decode('cp1252', 'ignore'))
+    print(rationale)
     
     proposed_policy.rationale = rationale + "\n\nDiff: " + diff
-    
-    # Step 6: prompt (or auto-approve); call policy/lifecycle.py's propose()/approve().
-    from policy.lifecycle import propose, approve, reject
+    return proposed_policy
+
+def step_6_propose(proposed_policy: Policy) -> Policy:
+    from policy.lifecycle import propose
     proposed_policy = propose(proposed_policy)
-    
     print("\n" + "=" * 60)
     print(f"Policy '{proposed_policy.policy_id}' is now PROPOSED.")
-    if not args.auto_approve:
-        choice = input("Do you want to APPROVE this policy? (y/n): ").strip().lower()
-        if choice != 'y':
-            reject(proposed_policy, "Rejected by user in demo.")
-            print("Policy rejected.")
-            return
-            
+    return proposed_policy
+
+def step_7_regression_and_approve(proposed_policy: Policy) -> Policy:
     print("\n" + "=" * 60)
     print("Step 7: Running Regression Tests before approval...")
     from runtime.regression_test import run_regression
@@ -102,15 +88,19 @@ def main() -> None:
     print(f"  - Success rate on newly auto-processed: {report.newly_auto_processed_success_rate:.2%}")
     print(f"  - Estimated workload delta (human reviews): {report.estimated_workload_delta}")
     
+    from policy.lifecycle import approve
     approve(proposed_policy)
+    
+    new_policy_path = os.path.join("policy", "versions", f"{proposed_policy.policy_id}.json")
     try:
         os.remove(new_policy_path)
     except FileNotFoundError:
         pass
     proposed_policy.to_json_file(new_policy_path)
     print(f"\nPolicy '{proposed_policy.policy_id}' is now APPROVED and ACTIVE.")
-    
-    # Step 8: construct one clearly-in-pattern unseen claim and one clearly-not
+    return proposed_policy
+
+def step_8_evaluate_claims(active_policy: Policy, proposed_policy: Policy):
     print("\n" + "=" * 60)
     print("Step 8: Evaluating new live claims")
     from runtime.evaluator import evaluate
@@ -143,6 +133,3 @@ def main() -> None:
     print(json.dumps(out_pattern, indent=2))
     print(f"Old Policy Decision: {evaluate(out_pattern, active_policy).action.value}")
     print(f"New Policy Decision: {evaluate(out_pattern, proposed_policy).action.value}")
-
-if __name__ == "__main__":
-    main()

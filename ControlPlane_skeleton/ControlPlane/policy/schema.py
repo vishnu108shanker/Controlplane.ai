@@ -85,7 +85,7 @@ class Evidence:
 class Policy:
     policy_id: str
     supersedes: str | None
-    conditions: list[Condition]
+    condition_groups: list[list[Condition]]
     action: Action
     requires_human: bool
     evidence: Evidence | None  # None only allowed for hand-authored baseline (v1)
@@ -93,7 +93,12 @@ class Policy:
     status: PolicyStatus
 
     def matches(self, claim: dict) -> bool:
-        return all(cond.evaluate(claim) for cond in self.conditions)
+        if not self.condition_groups:
+            return True
+        return any(
+            all(cond.evaluate(claim) for cond in group) 
+            for group in self.condition_groups
+        )
 
     @classmethod
     def from_json_file(cls, path: str) -> "Policy":
@@ -101,7 +106,11 @@ class Policy:
         with open(path, 'r') as f:
             data = json.load(f)
         
-        conditions = [Condition(field=c["field"], operator=Operator(c["operator"]), value=c["value"]) for c in data.get("conditions", [])]
+        condition_groups = []
+        for group in data.get("condition_groups", []):
+            parsed_group = [Condition(field=c["field"], operator=Operator(c["operator"]), value=c["value"]) for c in group]
+            condition_groups.append(parsed_group)
+            
         action = Action(data["action"])
         evidence_data = data.get("evidence")
         evidence = Evidence(**evidence_data) if evidence_data else None
@@ -110,7 +119,7 @@ class Policy:
         return cls(
             policy_id=data["policy_id"],
             supersedes=data.get("supersedes"),
-            conditions=conditions,
+            condition_groups=condition_groups,
             action=action,
             requires_human=data.get("requires_human", False),
             evidence=evidence,
@@ -125,8 +134,9 @@ class Policy:
         
         from dataclasses import asdict
         data = asdict(self)
-        for cond in data['conditions']:
-            cond['operator'] = cond['operator'].value
+        for group in data['condition_groups']:
+            for cond in group:
+                cond['operator'] = cond['operator'].value
         data['action'] = data['action'].value
         data['status'] = data['status'].value
         

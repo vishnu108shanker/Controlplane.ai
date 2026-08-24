@@ -41,22 +41,29 @@ def propose(draft_policy: Policy) -> Policy:
     return transition(draft_policy, PolicyStatus.PROPOSED)
 
 
+MIN_SUCCESS_RATE_TOLERANCE = 0.005 # 0.5% drop allowed
+
 def approve(proposed_policy: Policy) -> Policy:
     transition(proposed_policy, PolicyStatus.APPROVED)
     try:
         from runtime.regression_test import run_regression
-        run_regression(proposed_policy)
+        report = run_regression(proposed_policy)
+        if report.new_auto_process_count < report.old_auto_process_count:
+            raise ValueError(f"Regression failed: New auto-process count ({report.new_auto_process_count}) is less than old count ({report.old_auto_process_count}).")
+        if report.new_success_rate_on_auto_processed < (report.old_success_rate_on_auto_processed - MIN_SUCCESS_RATE_TOLERANCE):
+            raise ValueError(f"Regression failed: New success rate ({report.new_success_rate_on_auto_processed:.2%}) dropped more than tolerance from old rate ({report.old_success_rate_on_auto_processed:.2%}).")
     except (ImportError, AttributeError):
         raise NotImplementedError("Regression testing not yet implemented")
 
     transition(proposed_policy, PolicyStatus.ACTIVE)
+    
+    from policy.store import get_active_policy, save_policy
     # Get currently active policy and supersede it
     prefix = proposed_policy.policy_id.rsplit("-v", 1)[0]
     try:
         active = get_active_policy(prefix)
         transition(active, PolicyStatus.SUPERSEDED)
-        import os
-        active.to_json_file(os.path.join("policy", "versions", f"{active.policy_id}.json")) # Will raise if it already exists, need to overwrite. Actually conventions say 'never overwrite in place' but we load it without status... wait.
+        save_policy(active)
     except Exception:
         pass # No active policy or other issue
     return proposed_policy
@@ -66,31 +73,3 @@ def reject(proposed_policy: Policy, reason: str) -> Policy:
     transition(proposed_policy, PolicyStatus.REJECTED)
     proposed_policy.rationale += f" | REJECTED REASON: {reason}"
     return proposed_policy
-
-
-def get_active_policy(domain_prefix: str = "POLICY-042") -> Policy:
-    import os
-    versions_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "policy", "versions")
-    policies = []
-    
-    for filename in os.listdir(versions_dir):
-        if filename.startswith(domain_prefix) and filename.endswith(".json"):
-            path = os.path.join(versions_dir, filename)
-            pol = Policy.from_json_file(path)
-            policies.append(pol)
-            
-    # A policy only supersedes another if the superseding policy is ACTIVE or SUPERSEDED itself
-    superseded_ids = {p.supersedes for p in policies if p.supersedes and p.status in (PolicyStatus.ACTIVE, PolicyStatus.SUPERSEDED)}
-    
-    active_policies = []
-    for pol in policies:
-        # It's active if it claims to be active (or defaulted to active) AND is not superseded
-        if pol.status == PolicyStatus.ACTIVE and pol.policy_id not in superseded_ids:
-            active_policies.append(pol)
-                
-    if len(active_policies) == 1:
-        return active_policies[0]
-    elif len(active_policies) == 0:
-        raise ValueError(f"No active policy found for domain {domain_prefix}")
-    else:
-        raise ValueError(f"Multiple active policies found for domain {domain_prefix}: {[p.policy_id for p in active_policies]}")

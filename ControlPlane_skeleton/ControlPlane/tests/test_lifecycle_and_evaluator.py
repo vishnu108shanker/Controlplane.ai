@@ -48,18 +48,48 @@ class TestPolicyLifecycleTransitions:
         to skip regression testing."""
         from policy.schema import Policy, PolicyStatus, Action
         from policy.lifecycle import approve
+        from runtime.regression_test import RegressionReport
         
         called = False
         def mock_run_regression(policy):
             nonlocal called
             called = True
+            return RegressionReport(
+                old_policy_id="test", new_policy_id="test2", held_out_size=10,
+                old_auto_process_count=5, new_auto_process_count=6,
+                old_success_rate_on_auto_processed=0.8, new_success_rate_on_auto_processed=0.8,
+                estimated_cost_delta=0.0, estimated_workload_delta=0
+            )
             
         monkeypatch.setattr('runtime.regression_test.run_regression', mock_run_regression)
+        
+        # Mock save_policy so it doesn't fail writing to disk
+        monkeypatch.setattr('policy.store.save_policy', lambda p: None)
+        # Mock get_active_policy so it doesn't try to load files
+        monkeypatch.setattr('policy.store.get_active_policy', lambda prefix: None)
         
         p = Policy("test-v1", None, [], Action.AUTO_PROCESS, False, None, "", PolicyStatus.PROPOSED)
         approve(p)
         assert called, "regression_test.run_regression was not called!"
-
+    def test_approve_rejects_bad_regression(self, monkeypatch):
+        from policy.schema import Policy, PolicyStatus, Action
+        from policy.lifecycle import approve
+        from runtime.regression_test import RegressionReport
+        import pytest
+        
+        def mock_run_regression(policy):
+            return RegressionReport(
+                old_policy_id="test", new_policy_id="test2", held_out_size=10,
+                old_auto_process_count=10, new_auto_process_count=5, # Decreased count!
+                old_success_rate_on_auto_processed=0.8, new_success_rate_on_auto_processed=0.8,
+                estimated_cost_delta=0.0, estimated_workload_delta=0
+            )
+            
+        monkeypatch.setattr('runtime.regression_test.run_regression', mock_run_regression)
+        
+        p = Policy("test-v1", None, [], Action.AUTO_PROCESS, False, None, "", PolicyStatus.PROPOSED)
+        with pytest.raises(ValueError, match="Regression failed: New auto-process count"):
+            approve(p)
 
 class TestRuntimeEvaluator:
     """docs/tasks.md task 3: evaluator must agree with simulate.py's ground truth."""
@@ -83,7 +113,7 @@ class TestRuntimeEvaluator:
     def test_requires_human_overrides_action(self):
         from policy.schema import Policy, PolicyStatus, Action, Condition, Operator
         from runtime.evaluator import evaluate
-        p = Policy("test-v1", None, [Condition("amt", Operator.LT, 50)], Action.AUTO_PROCESS, True, None, "", PolicyStatus.ACTIVE)
+        p = Policy("test-v1", None, [[Condition("amt", Operator.LT, 50)]], Action.AUTO_PROCESS, True, None, "", PolicyStatus.ACTIVE)
         claim = {"amt": 10}
         d = evaluate(claim, p)
         assert d.action == Action.HUMAN_REVIEW
@@ -91,7 +121,7 @@ class TestRuntimeEvaluator:
     def test_no_matching_policy_falls_through_to_human_review(self):
         from policy.schema import Policy, PolicyStatus, Action, Condition, Operator
         from runtime.evaluator import evaluate
-        p = Policy("test-v1", None, [Condition("amt", Operator.LT, 50)], Action.AUTO_PROCESS, False, None, "", PolicyStatus.ACTIVE)
+        p = Policy("test-v1", None, [[Condition("amt", Operator.LT, 50)]], Action.AUTO_PROCESS, False, None, "", PolicyStatus.ACTIVE)
         claim = {"amt": 100}
         d = evaluate(claim, p)
         assert d.action == Action.HUMAN_REVIEW

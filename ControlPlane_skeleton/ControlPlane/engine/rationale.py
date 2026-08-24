@@ -13,13 +13,16 @@ STATUS: stub. See docs/tasks.md task 5 for the definition of done.
 
 from __future__ import annotations
 import os
+import logging
 from policy.schema import Evidence
+
+logger = logging.getLogger(__name__)
 
 
 def generate_rationale(evidence: Evidence, conditions_summary: str, old_policy_summary: str) -> str:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        print("[rationale] WARNING: No GROQ_API_KEY set — using MOCK rationale, not live LLM.")
+        logger.warning("No GROQ_API_KEY set - using MOCK rationale, not live LLM.")
         return "MOCK RATIONALE (No GROQ_API_KEY): The data shows this new rule significantly improves success rates compared to the baseline, so it is proposed for auto-processing."
         
     import groq
@@ -41,10 +44,14 @@ Write a short (2-3 sentences) human-readable explanation a non-technical reviewe
     
     response = client.chat.completions.create(
         model="openai/gpt-oss-20b",
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=250
     )
-    print(f"[rationale] Live LLM response received from Groq (model: openai/gpt-oss-20b).")
-    return response.choices[0].message.content
+    
+    logger.info("Live LLM response received from Groq (model: openai/gpt-oss-20b).")
+    rationale = response.choices[0].message.content.strip()
+    return rationale.encode('ascii', 'ignore').decode('ascii')
 
 
 def generate_diff_description(old_policy_summary: str, new_conditions_summary: str) -> str:

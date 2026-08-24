@@ -104,7 +104,7 @@ def load_held_out_data(csv_path: str = "data/insurance_claims.csv") -> pd.DataFr
     return test
 
 def run_regression(proposed_policy: Policy) -> RegressionReport:
-    from policy.lifecycle import get_active_policy
+    from policy.store import get_active_policy
     prefix = proposed_policy.policy_id.rsplit("-v", 1)[0]
     old_policy = get_active_policy(prefix)
     df = load_held_out_data()

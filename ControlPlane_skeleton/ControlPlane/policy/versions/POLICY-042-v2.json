@@ -1,22 +1,36 @@
 {
   "policy_id": "POLICY-042-v2",
   "supersedes": "POLICY-042-v1",
-  "conditions": [
-    {
-      "field": "incident_type",
-      "operator": "==",
-      "value": "airline_fault"
-    },
-    {
-      "field": "fraud_score",
-      "operator": "<=",
-      "value": 0.3
-    },
-    {
-      "field": "claim_amount",
-      "operator": "<=",
-      "value": 75000
-    }
+  "condition_groups": [
+    [
+      {
+        "field": "claim_amount",
+        "operator": "<",
+        "value": 50000
+      },
+      {
+        "field": "fraud_score",
+        "operator": "<=",
+        "value": 0.75
+      }
+    ],
+    [
+      {
+        "field": "incident_type",
+        "operator": "==",
+        "value": "airline_fault"
+      },
+      {
+        "field": "fraud_score",
+        "operator": "<=",
+        "value": 0.3
+      },
+      {
+        "field": "claim_amount",
+        "operator": "<=",
+        "value": 75000
+      }
+    ]
   ],
   "action": "AUTO_PROCESS",
   "requires_human": false,
@@ -30,6 +44,6 @@
     "held_out_baseline_success_rate": 0.4376,
     "naive_threshold_success_rate": 0.4699
   },
-  "rationale": "We propose adding a rule that flags claims where the incident is an airline fault, the fraud score is low (\u2264\u202f0.3), and the amount is no more than\u202f$75,000.  In back\u2011tests, this rule covered 181 training cases and 87 held\u2011out cases, and it correctly identified claims about 70\u202f% of the time\u2014roughly 26\u202f% higher than the 44\u202f% success rate we see in this same zone without the rule.  The evidence suggests the rule will improve our claim handling efficiency and reduce processing errors for this specific type of claim.\n\nDiff: Previously, All claims < $50k auto-processed. The data shows a pattern, so this proposes auto-processing claims that match: incident_type == airline_fault AND fraud_score <= 0.3 AND claim_amount <= 75000.",
+  "rationale": "The new rule targets claims that are both lowrisk and lowvalue: it automatically processes claims under$50,000 with a fraud score of 0.75 or less, and also covers airlinefault incidents that are under$75,000 with an even stricter fraud score of 0.3. Backtesting shows that this rule applies to 181 claims in the training data and 87 in the heldout set, and it achieves a 70.1% success ratewell above the 43.8% baselineindicating a clear improvement in accurate\n\nDiff: Previously, All claims < $50k auto-processed. The data shows a pattern, so this proposes auto-processing claims that match: (claim_amount < 50000 AND fraud_score <= 0.75) OR (incident_type == airline_fault AND fraud_score <= 0.3 AND claim_amount <= 75000).",
   "status": "active"
 }

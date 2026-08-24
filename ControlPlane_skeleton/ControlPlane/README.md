@@ -76,13 +76,18 @@ echo GROQ_API_KEY="your-groq-api-key-here" > .env
 
 ---
 
-## Running the Demo (End-to-End)
+## Running the Demos (End-to-End)
 
-### Interactive Mode
+If you see Mojibake (weird characters) on Windows, run this in your terminal first to set UTF-8 encoding:
 ```bash
-python demo.py
+chcp 65001
 ```
-This walks you through all 8 steps with pauses between each stage:
+
+### Dev / Debug Mode
+```bash
+python demo_dev.py
+```
+This walks you through all 8 steps with verbose logging and pauses between each stage:
 1. Shows the current active policy (POLICY-042-v1)
 2. Loads 20,000 historical claims
 3. Runs the discovery engine live — mines rules, prints evidence
@@ -93,8 +98,14 @@ This walks you through all 8 steps with pauses between each stage:
 
 ### Scripted Mode (no prompts)
 ```bash
-python demo.py --auto-approve
+python demo_dev.py --auto-approve
 ```
+
+### Judge / Presentation Mode
+```bash
+python demo_judge.py
+```
+This is the cleaner, color-coded presentation version for the final demo, concluding with an interactive terminal allowing you to type in custom claim details and instantly see the routing decision evaluated against both the old and new policies side-by-side.
 
 ### Expected Output (key numbers)
 These numbers are **computed live** from the data on every run:
@@ -177,7 +188,8 @@ ControlPlane/
 ├── tests/
 │   ├── test_lifecycle_and_evaluator.py
 │   └── test_rationale.py
-├── demo.py                   # End-to-end CLI demo
+├── demo_dev.py               # End-to-end dev CLI demo
+    demo_judge.py             # Interactive judge CLI demo
 ├── requirements.txt
 └── .env                      # GROQ_API_KEY (not committed)
 ```

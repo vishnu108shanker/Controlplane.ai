@@ -1,27 +1,21 @@
-from dotenv import load_dotenv
-load_dotenv()
 """
 api/main.py
 
-Architecture component: API surface (architecture.md §7).
-
-Thin HTTP layer over policy/lifecycle.py, engine/discover.py, and runtime/evaluator.py.
-This file should contain almost no logic of its own -- if you find yourself writing
-business logic here instead of calling into policy/ or runtime/ or engine/, that logic
-belongs in one of those modules instead.
-
-STATUS: stub. See docs/tasks.md task 6 for the definition of done.
+Architecture component: API surface (architecture.md A 7).
 """
 
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="ControlPlane.ai", version="0.1.0")
 
 
 @app.get("/policy/current")
 def get_current_policy():
-    from policy.lifecycle import get_active_policy
+    from policy.store import get_active_policy
     try:
         return get_active_policy()
     except Exception as e:
@@ -30,29 +24,31 @@ def get_current_policy():
 
 @app.post("/policy/discover")
 def discover_policy():
-    import os, subprocess
-    from policy.schema import Policy
+    import os
+    from policy.schema import Policy, PolicyStatus
+    from engine.discover import run_discovery
     from engine.rationale import generate_rationale, generate_diff_description
-    from policy.lifecycle import get_active_policy, propose
+    from policy.store import get_active_policy
+    from policy.lifecycle import propose
 
-    engine_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "engine")
-    res = subprocess.run(["python", "discover.py"], cwd=engine_dir, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise HTTPException(status_code=500, detail="Discovery failed: " + res.stderr)
-        
-    versions_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "policy", "versions")
-    new_policy_path = os.path.join(versions_dir, "POLICY-042-v2.json")
-    
     try:
+        new_policy_path = run_discovery()
         candidate_policy = Policy.from_json_file(new_policy_path)
-        from policy.schema import PolicyStatus
         candidate_policy.status = PolicyStatus.DRAFT
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to load generated policy: " + str(e))
+        raise HTTPException(status_code=500, detail="Discovery failed: " + str(e))
         
-    old_policy = get_active_policy("POLICY-042")
-    old_summary = "All claims < $50k auto-processed"
-    cond_summary = " AND ".join(f"{c.field} {c.operator.value} {c.value}" for c in candidate_policy.conditions)
+    active_policy = get_active_policy("POLICY-042")
+    cond_summaries = []
+    for group in candidate_policy.condition_groups:
+        cond_summaries.append("(" + " AND ".join(f"{c.field} {c.operator.value} {c.value}" for c in group) + ")")
+    cond_summary = " OR ".join(cond_summaries)
+    
+    # Simple summary of the old policy for the rationale prompt
+    old_conds = []
+    for group in active_policy.condition_groups:
+        old_conds.append("(" + " AND ".join(f"{c.field} {c.operator.value} {c.value}" for c in group) + ")")
+    old_summary = " OR ".join(old_conds)
     
     rationale_text = generate_rationale(candidate_policy.evidence, cond_summary, old_summary)
     diff_text = generate_diff_description(old_summary, cond_summary)
@@ -116,18 +112,13 @@ def reject_policy(policy_id: str, reason: str = ""):
 
 @app.post("/runtime/evaluate")
 def evaluate_claim(claim: dict):
-    from policy.lifecycle import get_active_policy
+    from policy.store import get_active_policy
     from runtime.evaluator import evaluate
     
     try:
         active_policy = get_active_policy()
-        for cond in active_policy.conditions:
-            if cond.field not in claim:
-                raise HTTPException(status_code=422, detail=f"Missing required field: {cond.field}")
-        
+        # Removed the missing required field check which iterated over active_policy.conditions since it's condition_groups now and Evaluator handles missing fields gracefully anyway
         decision = evaluate(claim, active_policy)
         return decision
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
